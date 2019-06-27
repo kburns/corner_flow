@@ -4,6 +4,7 @@ import numpy as np
 from mpi4py import MPI
 import time
 from scipy import special
+np.seterr(all='raise')
 
 from dedalus import public as de
 from dedalus.extras import flow_tools
@@ -26,7 +27,7 @@ noise_amp = 1e-3  # Initial condition noise amplitude
 width_safety = 1  # Mask width safety factor
 sponge_damping = 4  # Damping times across sponge layer
 # Timestepping
-dt_danger = 0.5  # CFL danger factor
+dt_danger = 0.01  # CFL danger factor
 snapshots_dt = 0.1  # Snapshots time cadence
 stop_sim_time = 10  # Simulation stop time
 
@@ -34,8 +35,8 @@ stop_sim_time = 10  # Simulation stop time
 # Geometry
 s_outer = s_inner + s_width
 # Discretization
-N1 = N
-N2 = N * 8
+N1 = N * 8
+N2 = N
 # Physical
 L = s_width
 dx = 1 / N
@@ -48,7 +49,8 @@ s_tau = s_width / U / sponge_damping
 # Timestepping
 dt_cfl = dx / U
 dt = dt_danger * min(dt_cfl, p_tau, s_tau)
-snapshots_iter = int(np.round(snapshots_dt / dt))
+#snapshots_iter = int(np.round(snapshots_dt / dt))
+snapshots_iter = 1
 
 # Bases and domain
 x1_basis = de.Fourier('x1', N1, interval=(0, np.pi/2), dealias=3/2)
@@ -56,25 +58,59 @@ x2_basis = de.Chebyshev('x2', N2, interval=(0, 1), dealias=3/2)
 domain = de.Domain([x1_basis, x2_basis], grid_dtype=np.float64)
 
 # Coordinate mapping
-def phi_func(x1, x2):
-    return x1
-def r_func(x1, x2):
-    return 1 + x2
 x1, x2 = domain.grids()
-phi = domain.new_field()
-phi['g'] = phi_func(x1, x2)
-d1_phi = phi.differentiate('x1')
-d2_phi = phi.differentiate('x2')
-r = domain.new_field()
-r['g'] = r_func(x1, x2)
-d1_r = r.differentiate('x1')
-d2_r = r.differentiate('x2')
-# X(yi(xi))
-#dxi(X) = dyi(X) dxi(yi)
+y1 = phi = x1
+y2 = r = domain.new_field()
+r['g'] = 1 + x2
+# Jacobian
+J = {}
+J[(1,1)] = domain.new_field()
+J[(1,1)]['g'] = 1
+J[(1,2)] = domain.new_field()
+J[(1,2)]['g'] = 0
+J[(2,1)] = y2.differentiate('x1')
+J[(2,2)] = y2.differentiate('x2')
+# Polar coordinate covariant metric
+gy_ = {}
+for i in [1, 2]:
+    for j in [1, 2]:
+        gy_[(i,j)] = domain.new_field()
+r.set_scales(1)
+gy_[(1,1)]['g'] = r['g']**2
+gy_[(1,2)]['g'] = 0
+gy_[(2,1)]['g'] = 0
+gy_[(2,2)]['g'] = 1
+# Covariant metric using change of variables
+gx_ = {}
+for i in [1, 2]:
+    for j in [1, 2]:
+        gx_ij = 0
+        for k in [1, 2]:
+            for l in [1, 2]:
+                gx_ij += gy_[(k,l)] * J[(k,i)] * J[(l,j)]
+        gx_[(i,j)] = gx_ij.evaluate()
+# Inverse to get contravariant metric
+det_gx_ = (gx_[(1,1)]*gx_[(2,2)] - gx_[(1,2)]*gx_[(2,1)]).evaluate()
+gx = {}
+gx[(1,1)] = ( gx_[(2,2)] / det_gx_).evaluate()
+gx[(1,2)] = (-gx_[(1,2)] / det_gx_).evaluate()
+gx[(2,1)] = (-gx_[(2,1)] / det_gx_).evaluate()
+gx[(2,2)] = ( gx_[(1,1)] / det_gx_).evaluate()
+# Christoffel symbols
+d = {1: x1_basis.Differentiate, 2: x2_basis.Differentiate}
+Gx = {}
+for i in [1, 2]:
+    for j in [1, 2]:
+        for m in [1, 2]:
+            Gxm_ij = 0
+            for k in [1, 2]:
+                Gxm_ij += 0.5 * gx[(k,m)] * (d[j](gx_[(i,k)]) + d[i](gx_[(j,k)]) - d[k](gx_[(i,j)]))
+            Gx[(m,i,j)] = Gxm_ij.evaluate()
 
 # Forcing
-x = r * np.cos(phi)
-y = r * np.sin(phi)
+r.set_scales(1)
+x = r['g'] * np.cos(phi)
+y = r['g'] * np.sin(phi)
 s = np.maximum(np.abs(x), np.abs(y))
 step = lambda x: (1 + special.erf(np.sqrt(np.pi)*x/width)) / 2
 # Sponge mask
@@ -96,6 +132,11 @@ ey_er = np.sin(phi)
 ref_uphi['g'] = ref_umag * ((s1 - s2) * ex_ephi + (s4 - s3) * ey_ephi)
 ref_ur['g'] = ref_umag * ((s1 - s2) * ex_er + (s4 - s3) * ey_er)
 
+ref_u1 = domain.new_field()
+ref_u2 = domain.new_field()
+ref_u1['g'] = 0
+ref_u2['g'] = 0
+
 # Problem
 # Covariant incompressible hydrodynamics
 # u1, u2: covariant velocity components
@@ -105,37 +146,32 @@ ref_ur['g'] = ref_umag * ((s1 - s2) * ex_er + (s4 - s3) * ey_er)
 # g_ij: covariant metric components
 # Gi_jk: second-kind Christoffel symbols
 problem = de.IVP(domain, variables=['p','u1','u2','d2_u1','d2_u2'])
+problem.parameters['r'] = r
 problem.parameters['nu'] = nu
 problem.parameters['s_tau'] = s_tau
 problem.parameters['s_mask'] = s_mask
 problem.parameters['ref_u1'] = ref_u1
 problem.parameters['ref_u2'] = ref_u2
-problem.parameters["g11"] = g11
-problem.parameters["g12"] = g12
-problem.parameters["g21"] = g21
-problem.parameters["g22"] = g22
-problem.parameters["g_11"] = g_11
-problem.parameters["g_12"] = g_12
-problem.parameters["g_21"] = g_21
-problem.parameters["g_22"] = g_22
-problem.substitutions['d1(A)'] = "dx1(A)")
-problem.substitutions['d2(A)'] = "dx2(A)")
+for i in [1, 2]:
+    for j in [1, 2]:
+        problem.parameters[f'g{i}{j}'] = gx[(i,j)]
+        problem.parameters[f'g_{i}{j}'] = gx_[(i,j)]
+        for m in [1, 2]:
+            problem.parameters[f'G{m}_{i}{j}'] = Gx[(m,i,j)]
+problem.substitutions['d1(A)'] = "dx1(A)"
+problem.substitutions['d2(A)'] = "dx2(A)"
 problem.substitutions['d1_u1'] = "d1(u1)"
 problem.substitutions['d1_u2'] = "d1(u2)"
-problem.substitutions['f1'] = "s_mask/s_tau*(ref_u1-u1)
+problem.substitutions['f1'] = "s_mask/s_tau*(ref_u1-u1)"
 problem.substitutions['f2'] = "s_mask/s_tau*(ref_u2-u2)"
-for i in ['1','2']:
-    for j in ['1','2']:
-        for m in ['1','2']:
-            problem.substitutions[f'G{m}_{i}{j}'] = "0.5*g1{m}*(d{j}(g_{i}1) + d{i}(g_{j}1) - d1(g_{i}{j})) + 0.5*g2{m}*(d{j}(g_{i}2) + d{i}(g_{j}2) - d2(g_{i}{j}))"
-for i in ['1','2']:
-    for j in ['1','2']:
+for i in [1, 2]:
+    for j in [1, 2]:
         problem.substitutions[f'D{i}_u{j}'] = f"d{i}_u{j} - G1_{i}{j}*u1 - G2_{i}{j}*u2"
-for i in ['1','2']:
-    for j in ['1','2']:
-        for k in ['1','2']:
+for i in [1, 2]:
+    for j in [1, 2]:
+        for k in [1, 2]:
             problem.substitutions[f'D{i}_D{j}_u{k}'] = f"d{i}(D{j}_u{k}) - G1_{i}{j}*D1_u{k} - G2_{i}{j}*D2_u{k} - G1_{i}{k}*D{j}_u1 - G2_{i}{k}*D{j}_u2"
-problem.add_equation("d1_u1 + d2_u2 = g11*D1_u1 + g12*D1_u2 + g21*D2_u1 + g22*D2_u2 - d1(u1) - d2_u2")
+problem.add_equation("d1_u1 + d2_u2 = g11*D1_u1 + g12*D1_u2 + g21*D2_u1 + g22*D2_u2 + d1_u1 + d2_u2")
 problem.add_equation("dt(u1) + d1(p) - nu*(d1(d1_u1) + d2(d2_u1)) = - (g11*u1*D1_u1 + g12*u1*D2_u1 + g21*u2*D1_u1 + g22*u2*D2_u1) + f1 + nu*(g11*D1_D1_u1 + g12*D1_D2_u1 + g21*D2_D1_u1 + g22*D2_D2_u1 - d1(d1_u1) - d2(d2_u1))")
 problem.add_equation("dt(u2) + d2(p) - nu*(d1(d1_u2) + d2(d2_u2)) = - (g11*u1*D1_u2 + g12*u1*D2_u2 + g21*u2*D1_u2 + g22*u2*D2_u2) + f2 + nu*(g11*D1_D1_u2 + g12*D1_D2_u2 + g21*D2_D1_u2 + g22*D2_D2_u2 - d1(d1_u2) - d2(d2_u2))")
 problem.add_equation("d2_u1 - d2(u1) = 0")
@@ -158,7 +194,7 @@ rand = np.random.RandomState(seed=42)
 # Velocity noise
 noise = rand.standard_normal(gshape)[slices]
 u1 = solver.state['u1']
-u1['g'] = noise_amp * noise * (1 - p_mask['g'])
+u1['g'] = noise_amp * noise
 
 # Integration parameters
 solver.stop_sim_time = stop_sim_time
@@ -169,7 +205,9 @@ solver.stop_iteration = np.inf
 snapshots = solver.evaluator.add_file_handler('snapshots', iter=snapshots_iter, max_writes=10)
 snapshots.add_system(solver.state)
 #snapshots.add_task("(dr(r*uphi) - dphi(ur))/r", name="vorticity")
-snapshots.add_task("s_mask")
+#snapshots.add_task("s_mask")
+snapshots.add_task("x1", name='phi')
+snapshots.add_task("r")
 
 # Main loop
 try:

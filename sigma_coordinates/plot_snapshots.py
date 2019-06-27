@@ -22,21 +22,22 @@ def main(filename, start, count, output):
     """Save plot of specified tasks for given range of analysis writes."""
 
     # Plot settings
-    tasks = ['uphi','ur','vorticity']
+    tasks = ['p','u1','u2','d2_u1','d2_u2','r']
     scale = 2.5
     dpi = 300
     title_func = lambda sim_time: 't = {:.3f}'.format(sim_time)
     savename_func = lambda write: 'write_{:06}.png'.format(write)
     # Layout
-    nrows, ncols = 1, 3
+    nrows, ncols = 2, 3
     image = plot_tools.Box(1, 1)
     pad = plot_tools.Frame(0.2, 0.2, 0.1, 0.1)
     margin = plot_tools.Frame(0.3, 0.2, 0.1, 0.1)
     # Function
-    def func(phimesh, rmesh, data):
-        xmesh = rmesh * np.cos(phimesh)
-        ymesh = rmesh * np.sin(phimesh)
-        return xmesh, ymesh, data
+    # def func(phimesh, rmesh, data):
+    #     xmesh = rmesh * np.cos(phimesh)
+    #     ymesh = rmesh * np.sin(phimesh)
+    #     return xmesh, ymesh, data
+    func = None
 
     # Create multifigure
     mfig = plot_tools.MultiFigure(nrows, ncols, image, pad, margin, scale)
