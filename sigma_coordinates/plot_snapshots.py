@@ -22,7 +22,7 @@ def main(filename, start, count, output):
     """Save plot of specified tasks for given range of analysis writes."""
 
     # Plot settings
-    tasks = ['p','u1','u2','d2_u1','d2_u2','r']
+    tasks = ['p','u1','u2','r','d2_u1','d2_u2']
     scale = 2.5
     dpi = 300
     title_func = lambda sim_time: 't = {:.3f}'.format(sim_time)
@@ -33,11 +33,13 @@ def main(filename, start, count, output):
     pad = plot_tools.Frame(0.2, 0.2, 0.1, 0.1)
     margin = plot_tools.Frame(0.3, 0.2, 0.1, 0.1)
     # Function
-    # def func(phimesh, rmesh, data):
-    #     xmesh = rmesh * np.cos(phimesh)
-    #     ymesh = rmesh * np.sin(phimesh)
-    #     return xmesh, ymesh, data
-    func = None
+    def func(x1, x2, data):
+        phi = x1
+        a = 0.5
+        r = x2 + a*(1 - np.cos(4*x1))/2
+        x = r * np.cos(phi)
+        y = r * np.sin(phi)
+        return x, y, data
 
     # Create multifigure
     mfig = plot_tools.MultiFigure(nrows, ncols, image, pad, margin, scale)

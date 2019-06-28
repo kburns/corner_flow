@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 s_inner = 2.5  # Inner square half-length
 s_width = 1  # Channel width
 # Discretization
-N = 64  # Nominal points-per-unit-length
+N = 32  # Nominal points-per-unit-length
 # Physical
 Re_danger = 1  # Reynolds number danger factor
 U = 1  # Imposed velocity
@@ -27,7 +27,7 @@ noise_amp = 1e-3  # Initial condition noise amplitude
 width_safety = 1  # Mask width safety factor
 sponge_damping = 4  # Damping times across sponge layer
 # Timestepping
-dt_danger = 0.01  # CFL danger factor
+dt_danger = 0.1  # CFL danger factor
 snapshots_dt = 0.1  # Snapshots time cadence
 stop_sim_time = 10  # Simulation stop time
 
@@ -49,19 +49,19 @@ s_tau = s_width / U / sponge_damping
 # Timestepping
 dt_cfl = dx / U
 dt = dt_danger * min(dt_cfl, p_tau, s_tau)
-#snapshots_iter = int(np.round(snapshots_dt / dt))
-snapshots_iter = 1
+snapshots_iter = int(np.round(snapshots_dt / dt))
 
 # Bases and domain
 x1_basis = de.Fourier('x1', N1, interval=(0, np.pi/2), dealias=3/2)
-x2_basis = de.Chebyshev('x2', N2, interval=(0, 1), dealias=3/2)
+x2_basis = de.Chebyshev('x2', N2, interval=(s_inner, s_outer), dealias=3/2)
 domain = de.Domain([x1_basis, x2_basis], grid_dtype=np.float64)
 
 # Coordinate mapping
 x1, x2 = domain.grids()
 y1 = phi = x1
 y2 = r = domain.new_field()
-r['g'] = 1 + x2
+a = 0.1
+r['g'] = x2 + a*(1 - np.cos(4*x1))/2
 # Jacobian
 J = {}
 J[(1,1)] = domain.new_field()
@@ -87,7 +87,7 @@ for i in [1, 2]:
         gx_ij = 0
         for k in [1, 2]:
             for l in [1, 2]:
-                gx_ij += gy_[(k,l)] * J[(k,i)] * J[(l,j)]
+                gx_ij = gx_ij + gy_[(k,l)] * J[(k,i)] * J[(l,j)]
         gx_[(i,j)] = gx_ij.evaluate()
 # Inverse to get contravariant metric
 det_gx_ = (gx_[(1,1)]*gx_[(2,2)] - gx_[(1,2)]*gx_[(2,1)]).evaluate()
@@ -104,7 +104,7 @@ for i in [1, 2]:
         for m in [1, 2]:
             Gxm_ij = 0
             for k in [1, 2]:
-                Gxm_ij += 0.5 * gx[(k,m)] * (d[j](gx_[(i,k)]) + d[i](gx_[(j,k)]) - d[k](gx_[(i,j)]))
+                Gxm_ij = Gxm_ij + 0.5 * gx[(k,m)] * (d[j](gx_[(i,k)]) + d[i](gx_[(j,k)]) - d[k](gx_[(i,j)]))
             Gx[(m,i,j)] = Gxm_ij.evaluate()
 
 # Forcing
@@ -114,28 +114,25 @@ y = r['g'] * np.sin(phi)
 s = np.maximum(np.abs(x), np.abs(y))
 step = lambda x: (1 + special.erf(np.sqrt(np.pi)*x/width)) / 2
 # Sponge mask
-s1 = step(s_width/2 - x) * step(x + s_width / 2)
-s2 = step(s_width/2 - x) * step(x + s_width / 2)
-s3 = step(s_width/2 - y) * step(y + s_width / 2)
-s4 = step(s_width/2 - y) * step(y + s_width / 2)
+s1 = step(s_width/2 - x) * step(x + s_width / 2) * step(y)
+s2 = step(s_width/2 - x) * step(x + s_width / 2) * step(-y)
+s3 = step(s_width/2 - y) * step(y + s_width / 2) * step(x)
+s4 = step(s_width/2 - y) * step(y + s_width / 2) * step(-x)
 s_mask = domain.new_field()
 s_mask['g'] = s1 + s2 + s3 + s4
 # Reference solution
-ref_uphi = domain.new_field()
-ref_ur = domain.new_field()
+ref_uphi = ref_uy1 = domain.new_field()
+ref_ur = ref_uy2 = domain.new_field()
 ref_umag = U * (s_outer - s) * (s - s_inner) / (s_width / 2)**2
 ref_umag = np.maximum(ref_umag, 0)
-ex_ephi = -np.sin(phi)
-ey_ephi = np.cos(phi)
+ex_ephi = -np.sin(phi) * r['g']
+ey_ephi = np.cos(phi) * r['g']
 ex_er = np.cos(phi)
 ey_er = np.sin(phi)
 ref_uphi['g'] = ref_umag * ((s1 - s2) * ex_ephi + (s4 - s3) * ey_ephi)
 ref_ur['g'] = ref_umag * ((s1 - s2) * ex_er + (s4 - s3) * ey_er)
-
-ref_u1 = domain.new_field()
-ref_u2 = domain.new_field()
-ref_u1['g'] = 0
-ref_u2['g'] = 0
+ref_ux1 = (J[(1,1)]*ref_uy1 + J[(2,1)]*ref_uy2).evaluate()
+ref_ux2 = (J[(1,2)]*ref_uy1 + J[(2,2)]*ref_uy2).evaluate()
 
 # Problem
 # Covariant incompressible hydrodynamics
@@ -150,8 +147,8 @@ problem.parameters['r'] = r
 problem.parameters['nu'] = nu
 problem.parameters['s_tau'] = s_tau
 problem.parameters['s_mask'] = s_mask
-problem.parameters['ref_u1'] = ref_u1
-problem.parameters['ref_u2'] = ref_u2
+problem.parameters['ref_u1'] = ref_ux1
+problem.parameters['ref_u2'] = ref_ux2
 for i in [1, 2]:
     for j in [1, 2]:
         problem.parameters[f'g{i}{j}'] = gx[(i,j)]
@@ -171,9 +168,9 @@ for i in [1, 2]:
     for j in [1, 2]:
         for k in [1, 2]:
             problem.substitutions[f'D{i}_D{j}_u{k}'] = f"d{i}(D{j}_u{k}) - G1_{i}{j}*D1_u{k} - G2_{i}{j}*D2_u{k} - G1_{i}{k}*D{j}_u1 - G2_{i}{k}*D{j}_u2"
-problem.add_equation("d1_u1 + d2_u2 = g11*D1_u1 + g12*D1_u2 + g21*D2_u1 + g22*D2_u2 + d1_u1 + d2_u2")
-problem.add_equation("dt(u1) + d1(p) - nu*(d1(d1_u1) + d2(d2_u1)) = - (g11*u1*D1_u1 + g12*u1*D2_u1 + g21*u2*D1_u1 + g22*u2*D2_u1) + f1 + nu*(g11*D1_D1_u1 + g12*D1_D2_u1 + g21*D2_D1_u1 + g22*D2_D2_u1 - d1(d1_u1) - d2(d2_u1))")
-problem.add_equation("dt(u2) + d2(p) - nu*(d1(d1_u2) + d2(d2_u2)) = - (g11*u1*D1_u2 + g12*u1*D2_u2 + g21*u2*D1_u2 + g22*u2*D2_u2) + f2 + nu*(g11*D1_D1_u2 + g12*D1_D2_u2 + g21*D2_D1_u2 + g22*D2_D2_u2 - d1(d1_u2) - d2(d2_u2))")
+problem.add_equation("d1_u1 + x2**2*d2_u2 = - x2**2*(g11*D1_u1 + g12*D1_u2 + g21*D2_u1 + g22*D2_u2) + d1_u1 + x2**2*d2_u2")
+problem.add_equation("x2**2*dt(u1) + x2**2*d1(p) - nu*(d1(d1_u1) + x2**2*d2(d2_u1)) = - x2**2*(g11*u1*D1_u1 + g12*u1*D2_u1 + g21*u2*D1_u1 + g22*u2*D2_u1) + x2**2*f1 + x2**2*nu*(g11*D1_D1_u1 + g12*D1_D2_u1 + g21*D2_D1_u1 + g22*D2_D2_u1) - nu*(d1(d1_u1) + x2**2*d2(d2_u1))")
+problem.add_equation("x2**2*dt(u2) + x2**2*d2(p) - nu*(d1(d1_u2) + x2**2*d2(d2_u2)) = - x2**2*(g11*u1*D1_u2 + g12*u1*D2_u2 + g21*u2*D1_u2 + g22*u2*D2_u2) + x2**2*f2 + x2**2*nu*(g11*D1_D1_u2 + g12*D1_D2_u2 + g21*D2_D1_u2 + g22*D2_D2_u2) - nu*(d1(d1_u2) + x2**2*d2(d2_u2))")
 problem.add_equation("d2_u1 - d2(u1) = 0")
 problem.add_equation("d2_u2 - d2(u2) = 0")
 problem.add_bc("left(u1) = 0")
