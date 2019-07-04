@@ -16,27 +16,27 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 plt.ioff()
 from dedalus.extras import plot_tools
+from parameters import *
 
 
 def main(filename, start, count, output):
     """Save plot of specified tasks for given range of analysis writes."""
 
     # Plot settings
-    tasks = ['p','u1','u2','r','d2_u1','d2_u2']
+    tasks = ['b','u1','u2','p','speed','div_u','curl_u']
     scale = 2.5
     dpi = 300
     title_func = lambda sim_time: 't = {:.3f}'.format(sim_time)
     savename_func = lambda write: 'write_{:06}.png'.format(write)
     # Layout
-    nrows, ncols = 2, 3
+    nrows, ncols = 2, 4
     image = plot_tools.Box(1, 1)
     pad = plot_tools.Frame(0.2, 0.2, 0.1, 0.1)
     margin = plot_tools.Frame(0.3, 0.2, 0.1, 0.1)
     # Function
     def func(x1, x2, data):
         phi = x1
-        a = 0.5
-        r = x2 + a*(1 - np.cos(4*x1))/2
+        r = x2 * (np.cos(phi)**s_n + np.sin(phi)**s_n)**(-1/s_n)
         x = r * np.cos(phi)
         y = r * np.sin(phi)
         return x, y, data

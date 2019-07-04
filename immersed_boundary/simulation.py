@@ -4,6 +4,7 @@ import numpy as np
 from mpi4py import MPI
 import time
 from scipy import special
+np.seterr(all='raise')
 
 from dedalus import public as de
 from dedalus.extras import flow_tools
